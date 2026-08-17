@@ -97,6 +97,14 @@ For local work, `pnpm dev` runs `wrangler dev` against `.dev.vars` and a local D
 database (run `pnpm db:migrate:local` once first), and `pnpm typecheck` runs tsc.
 Discord cannot reach localhost, so testing real interactions needs a deploy or a tunnel.
 
+## Contributing
+
+Judge is a small, silly project built for one friend group, and it is finished in the way
+small, silly projects get to be finished. There is no roadmap, and feature requests will
+mostly be declined to keep the scope where it is: the court hears many motions and grants
+few. Genuine bugs are a different matter. If something is broken, open an issue, and a
+fix as a pull request is very welcome.
+
 ## Licence
 
 MIT, see [LICENSE](LICENSE).
