@@ -1,4 +1,4 @@
-# Judge
+# ⚖️ Judge
 
 Someone ate one of your fries in maccies last night. You file charges, the server votes,
 and if the jury agrees they lose 3 points in front of everyone. Judge is a small claims
