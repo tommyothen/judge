@@ -204,6 +204,8 @@ export function hubEmbed(board: ScoreRow[], openCases: Case[], guildId: string):
   return {
     color: COLOUR.parchment,
     title: 'The public record',
+    // The quiet attribution: the hub title links to the source.
+    url: 'https://github.com/tommyothen/judge',
     description,
     footer: { text: 'File a case below. The court is always in session.' },
   };
