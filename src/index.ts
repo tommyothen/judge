@@ -17,6 +17,18 @@ import type { Env } from './types.js';
 
 const GREETING = 'Judge. The court is in session.';
 
+/**
+ * Everything the bot uses: View Channels, Send Messages, Send Messages in
+ * Threads, Embed Links, Read Message History, Manage Messages, Manage
+ * Channels, Manage Threads, Manage Roles, Manage Nicknames. The one place the
+ * number lives; /invite hands it out so published links never go stale.
+ */
+const INVITE_PERMISSIONS = '292460522512';
+
+function inviteUrl(clientId: string): string {
+  return `https://discord.com/oauth2/authorize?client_id=${clientId}&scope=bot%20applications.commands&permissions=${INVITE_PERMISSIONS}`;
+}
+
 function isInteractionPath(pathname: string): boolean {
   return pathname === '/interactions' || pathname === '/';
 }
@@ -56,6 +68,10 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/') {
       return new Response(GREETING, { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+
+    if (request.method === 'GET' && url.pathname === '/invite') {
+      return Response.redirect(inviteUrl(env.DISCORD_CLIENT_ID), 302);
     }
 
     if (request.method === 'POST' && isInteractionPath(url.pathname)) {

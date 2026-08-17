@@ -10,8 +10,8 @@ get a case number, a jury, and a permanent record.
 
 ## Invite it
 
-[Invite Judge](https://discord.com/oauth2/authorize?client_id=1538485024867876944&scope=bot%20applications.commands&permissions=292460522512),
-then have the server owner run `/setup`. The bot builds a category with a locked
+[Invite Judge](https://judge.tommyothen.workers.dev/invite), then have the server owner
+run `/setup`. The bot builds a category with a locked
 dashboard channel and a cases forum, and pins the hub message: the scoreboard, plus every
 case still open. Cases are filed from the hub's buttons, voted on with the buttons on the
 case post (one vote each, changeable until the deadline, and public: the case lists who
@@ -87,8 +87,8 @@ You need a Cloudflare account, `pnpm` and `wrangler`.
    `GUILD_ID=<your server id>` in `.dev.vars` to register to one server for instant
    testing; leave it unset to register globally, which can take up to an hour.
 
-6. Invite your instance using the invite URL above with your own application ID, and run
-   `/setup`. Servers that refuse forum creation over the API get told to make the forum
+6. Invite your instance from `https://<worker>.<your-subdomain>.workers.dev/invite`,
+   which redirects to the OAuth URL with the right permissions, and run `/setup`. Servers that refuse forum creation over the API get told to make the forum
    by hand and run `/setup forum:#cases dashboard:#courtroom`, which is also how you
    adopt channels you already have.
 
