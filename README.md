@@ -57,7 +57,8 @@ You need a Cloudflare account, `pnpm` and `wrangler`.
 
 1. At <https://discord.com/developers/applications>, create an application and add a
    bot. Collect the bot token (Bot tab), the application ID and the public key (General
-   Information). No privileged intents are needed.
+   Information). No privileged intents are needed. Under Installation, untick User
+   Install; Judge only makes sense installed to a server.
 
 2. Install, create the database and apply the schema:
 
