@@ -133,11 +133,6 @@ export class Rest {
     await this.send('PUT', `/channels/${channelId}/pins/${messageId}`);
   }
 
-  /** Public thread hanging off a message. The thread id is the message id. */
-  startThread(channelId: string, messageId: string, payload: unknown): Promise<any> {
-    return this.send('POST', `/channels/${channelId}/messages/${messageId}/threads`, payload);
-  }
-
   async archiveThread(threadId: string): Promise<void> {
     await this.editChannel(threadId, { archived: true });
   }

@@ -219,9 +219,23 @@ async function settings(
     const { env, rest } = c;
     c.ctx.waitUntil(
       (async () => {
+        // The mode has to land before anything is resynced: resyncing against
+        // the old mode after a failed write would dress everyone up wrongly.
         try {
           await updateSettings(db, guildId, { standing: mode });
+        } catch (err) {
+          console.error('standing change failed', err);
+          try {
+            await rest.editOriginal(env.DISCORD_CLIENT_ID, interaction.token, {
+              content: 'The change did not take. The clerk blames the filing cabinet. Try again.',
+            });
+          } catch {
+            // The interaction token has expired or Discord is unwell.
+          }
+          return;
+        }
 
+        try {
           const lines = [STANDING_CONFIRMATION[mode]];
           if (wantsRoles(mode)) lines.push(await ensureTierRoles(rest, db, guildId));
           if (wantsNicknames(mode)) {

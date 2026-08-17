@@ -47,20 +47,47 @@ function outcomeTagKey(filed: Case, status: CaseStatus): string {
 }
 
 /**
+ * A Workers invocation gets a limited number of subrequests (50 on the free
+ * plan), and every case swept costs at least one REST call, so a tick works to
+ * a budget instead of walking the whole docket. Verdicts drain the due list a
+ * batch a minute; deletion checks rotate through the rest a slice a minute.
+ */
+const RESOLUTIONS_PER_TICK = 8;
+const DELETION_CHECKS_PER_TICK = 15;
+
+/**
  * Called once a minute by the cron. It resolves cases whose deadline has passed
- * and voids cases whose message was deleted, so a deletion takes effect on the
- * next pass rather than waiting for the deadline. Every case is isolated: one
- * broken verdict must not hold up the rest of the docket.
+ * and voids cases whose message was deleted, so a deletion takes effect within
+ * a few passes rather than waiting for the deadline. Every case is isolated:
+ * one broken verdict must not hold up the rest of the docket.
  */
 export async function resolveDueCases(env: Env, rest: Rest): Promise<void> {
   const open = await getOpenCases(env.DB);
   const now = Date.now();
 
-  for (const filed of open) {
+  const due = open.filter((c) => c.deadline <= now);
+  const waiting = open.filter((c) => c.deadline > now);
+
+  // Oldest deadline first; anything past the budget catches the next tick.
+  // Resolved cases leave the docket, so a backlog drains rather than starves.
+  for (const filed of due.slice(0, RESOLUTIONS_PER_TICK)) {
     try {
       await sweepCase(env, rest, filed, now);
     } catch (err) {
       console.error(`resolving case ${filed.id} failed`, err);
+    }
+  }
+
+  // Each waiting case lands in one slice by id, and the tick number walks the
+  // slices, so every case still gets its deletion check once a rotation.
+  const stride = Math.max(1, Math.ceil(waiting.length / DELETION_CHECKS_PER_TICK));
+  const tick = Math.floor(now / 60_000);
+  for (const filed of waiting) {
+    if (filed.id % stride !== tick % stride) continue;
+    try {
+      await sweepCase(env, rest, filed, now);
+    } catch (err) {
+      console.error(`checking case ${filed.id} failed`, err);
     }
   }
 }

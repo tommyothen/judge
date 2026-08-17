@@ -35,9 +35,23 @@ function truncate(text: string, max: number): string {
   return `${clean.slice(0, Math.max(max - 3, 1)).trimEnd()}...`;
 }
 
+/** Backslash-escapes the markdown Discord renders inside embed descriptions. */
+function escapeMd(text: string): string {
+  return text.replace(/[\\`*_~|[\]]/g, '\\$&');
+}
+
+/**
+ * A reason keeps its markdown, that is half the fun, but masked links do not
+ * survive: [free nitro](https://evil.example) on a public embed is a phishing
+ * surface, so the brackets are escaped and the mask falls apart.
+ */
+function unmaskLinks(text: string): string {
+  return text.replace(/[[\]]/g, '\\$&');
+}
+
 /** Keeps a multi-line reason inside the markdown quote block. */
 function asQuote(reason: string): string {
-  return `> ${truncate(reason, 900).replace(/\r?\n/g, '\n> ')}`;
+  return `> ${unmaskLinks(truncate(reason, 900)).replace(/\r?\n/g, '\n> ')}`;
 }
 
 function seconds(epochMs: number): number {
@@ -187,7 +201,7 @@ export function hubEmbed(board: ScoreRow[], openCases: Case[], guildId: string):
     rows.length === 0
       ? 'Nobody has any points yet.'
       : rows
-          .map((row, i) => `${i + 1}. ${truncate(row.displayName, 40)} · ${row.points} pts · ${titleFor(row.points)}`)
+          .map((row, i) => `${i + 1}. ${escapeMd(truncate(row.displayName, 40))} · ${row.points} pts · ${titleFor(row.points)}`)
           .join('\n');
 
   const shownCases = openCases.slice(0, OPEN_CASE_ROWS);
@@ -256,7 +270,7 @@ export function recordEmbed(displayName: string, points: number, cases: Case[]):
   const rows = cases.slice(0, RECORD_ROWS).map((c) => {
     const { tag, signed } = recordTag(c);
     const head = signed ? `${tag} ${signed}` : tag;
-    return `${head} · ${truncate(c.reason, REASON_LINE_MAX)} · <t:${seconds(c.createdAt)}:R>`;
+    return `${head} · ${unmaskLinks(truncate(c.reason, REASON_LINE_MAX))} · <t:${seconds(c.createdAt)}:R>`;
   });
 
   const body = rows.length === 0 ? 'No criminal record.' : rows.join('\n');

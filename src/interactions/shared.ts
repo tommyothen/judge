@@ -12,6 +12,7 @@ import {
   getBoard,
   getSettings,
   hasOpenCaseAgainst,
+  MAX_OPEN_PER_KIND,
   setCasePost,
   touchName,
 } from '../db.js';
@@ -216,18 +217,28 @@ export async function runFiling(c: Ctx, req: FilingRequest): Promise<void> {
       return;
     }
 
-    if (req.kind === 'accuse') {
-      const open = await countOpenCasesByAccuser(db, req.guildId, req.accuserId);
-      if (open >= 2) {
-        await reply('You have enough open lawsuits already. Let one conclude first.');
-        return;
-      }
-      if (await hasOpenCaseAgainst(db, req.guildId, req.accuserId, req.accusedId)) {
-        await reply('You already have a case open against them. One grievance at a time.');
-        return;
-      }
-    } else if (req.accuserId === req.accusedId) {
+    if (req.kind === 'commend' && req.accuserId === req.accusedId) {
       await reply('You cannot commend yourself. The court admires the confidence.');
+      return;
+    }
+
+    // Both kinds carry the same limits; unlimited commendations would let two
+    // friendly accounts mint points as fast as they could open cases.
+    const open = await countOpenCasesByAccuser(db, req.guildId, req.accuserId, req.kind);
+    if (open >= MAX_OPEN_PER_KIND) {
+      await reply(
+        req.kind === 'accuse'
+          ? 'You have enough open lawsuits already. Let one conclude first.'
+          : 'You have enough open commendations already. Let one conclude first.',
+      );
+      return;
+    }
+    if (await hasOpenCaseAgainst(db, req.guildId, req.accuserId, req.accusedId, req.kind)) {
+      await reply(
+        req.kind === 'accuse'
+          ? 'You already have a case open against them. One grievance at a time.'
+          : 'You already have a commendation open for them. One tribute at a time.',
+      );
       return;
     }
 
@@ -250,6 +261,12 @@ export async function runFiling(c: Ctx, req: FilingRequest): Promise<void> {
       points: req.points,
       deadline: Date.now() + durationMin * 60_000,
     });
+    // The insert re-checks the limits atomically; a filing racing this one past
+    // the checks above lands here.
+    if (!filed) {
+      await reply('You have enough open cases already. Let one conclude first.');
+      return;
+    }
 
     // The filer's own vote is implied by filing at all.
     const { tally } = await castVote(db, filed.id, req.accuserId, 'yes');

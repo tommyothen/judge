@@ -134,7 +134,32 @@ export async function getSettings(db: D1Database, guildId: string): Promise<Guil
   return row ? toSettings(row) : defaultSettings(guildId);
 }
 
-/** Merge `patch` over the current settings (or the defaults), persist, and return the result. */
+/** Column name and encoder per settings field, for building partial updates. */
+const SETTINGS_COLUMNS: Record<
+  keyof Omit<GuildSettings, 'guildId'>,
+  { column: string; encode: (merged: GuildSettings) => unknown }
+> = {
+  quorum: { column: 'quorum', encode: (m) => m.quorum },
+  defaultDurationMin: { column: 'default_duration_min', encode: (m) => m.defaultDurationMin },
+  categoryId: { column: 'category_id', encode: (m) => m.categoryId },
+  courtChannelId: { column: 'court_channel_id', encode: (m) => m.courtChannelId },
+  forumChannelId: { column: 'forum_channel_id', encode: (m) => m.forumChannelId },
+  hubMessageId: { column: 'hub_message_id', encode: (m) => m.hubMessageId },
+  tags: { column: 'tags_json', encode: (m) => (m.tags === null ? null : JSON.stringify(m.tags)) },
+  standing: { column: 'standing', encode: (m) => m.standing },
+  tierRoles: {
+    column: 'tier_roles_json',
+    encode: (m) => (m.tierRoles === null ? null : JSON.stringify(m.tierRoles)),
+  },
+  nicknameSync: { column: 'nickname_sync', encode: (m) => (m.nicknameSync ? 1 : 0) },
+};
+
+/**
+ * Merge `patch` over the current settings (or the defaults), persist, and
+ * return the result. On conflict only the patched columns are written, so two
+ * concurrent updates to different fields (the cron healing the hub while the
+ * owner flips a setting) cannot clobber each other's work.
+ */
 export async function updateSettings(
   db: D1Database,
   guildId: string,
@@ -143,37 +168,21 @@ export async function updateSettings(
   const current = await getSettings(db, guildId);
   const merged: GuildSettings = { ...current, ...patch, guildId };
 
+  const fields = Object.values(SETTINGS_COLUMNS);
+  const patched = Object.keys(patch)
+    .filter((key): key is keyof typeof SETTINGS_COLUMNS => key in SETTINGS_COLUMNS)
+    .map((key) => SETTINGS_COLUMNS[key]);
+  if (patched.length === 0) return merged;
+
+  const sets = patched.map(({ column }) => `${column} = excluded.${column}`).join(', ');
   await db
     .prepare(
       `INSERT INTO guild_settings
-         (guild_id, quorum, default_duration_min, category_id, court_channel_id, forum_channel_id,
-          hub_message_id, tags_json, standing, tier_roles_json, nickname_sync)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (guild_id) DO UPDATE SET
-         quorum               = excluded.quorum,
-         default_duration_min = excluded.default_duration_min,
-         category_id          = excluded.category_id,
-         court_channel_id     = excluded.court_channel_id,
-         forum_channel_id     = excluded.forum_channel_id,
-         hub_message_id       = excluded.hub_message_id,
-         tags_json            = excluded.tags_json,
-         standing             = excluded.standing,
-         tier_roles_json      = excluded.tier_roles_json,
-         nickname_sync        = excluded.nickname_sync`,
+         (guild_id, ${fields.map(({ column }) => column).join(', ')})
+       VALUES (${['?', ...fields.map(() => '?')].join(', ')})
+       ON CONFLICT (guild_id) DO UPDATE SET ${sets}`,
     )
-    .bind(
-      merged.guildId,
-      merged.quorum,
-      merged.defaultDurationMin,
-      merged.categoryId,
-      merged.courtChannelId,
-      merged.forumChannelId,
-      merged.hubMessageId,
-      merged.tags === null ? null : JSON.stringify(merged.tags),
-      merged.standing,
-      merged.tierRoles === null ? null : JSON.stringify(merged.tierRoles),
-      merged.nicknameSync ? 1 : 0,
-    )
+    .bind(merged.guildId, ...fields.map(({ encode }) => encode(merged)))
     .run();
 
   return merged;
@@ -197,6 +206,16 @@ export async function getConfiguredGuilds(db: D1Database): Promise<GuildSettings
 // Cases
 // ---------------------------------------------------------------------------
 
+/** Open cases one filer may hold per kind: two accusations and two commendations. */
+export const MAX_OPEN_PER_KIND = 2;
+
+/**
+ * Files a case, or returns undefined when the filer is already at the open-case
+ * limit for this kind or has an open case of this kind against this target.
+ * The limits are enforced inside the insert itself, so two filings racing each
+ * other cannot both slip under the cap; the friendlier per-limit refusals in
+ * runFiling are just the early exits.
+ */
 export async function createCase(
   db: D1Database,
   input: {
@@ -209,7 +228,7 @@ export async function createCase(
     points: number;
     deadline: number;
   },
-): Promise<Case> {
+): Promise<Case | undefined> {
   const createdAt = Date.now();
 
   // The next per-guild number is picked inside the insert, so two people filing
@@ -218,8 +237,12 @@ export async function createCase(
     .prepare(
       `INSERT INTO cases
          (guild_id, channel_id, message_id, kind, accuser_id, accused_id, reason, points, deadline, status, created_at, number)
-       VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'open', ?,
-               (SELECT COALESCE(MAX(number), 0) + 1 FROM cases WHERE guild_id = ?))
+       SELECT ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'open', ?,
+               (SELECT COALESCE(MAX(number), 0) + 1 FROM cases WHERE guild_id = ?)
+       WHERE (SELECT COUNT(*) FROM cases
+               WHERE guild_id = ? AND accuser_id = ? AND kind = ? AND status = 'open') < ?
+         AND NOT EXISTS (SELECT 1 FROM cases
+               WHERE guild_id = ? AND accuser_id = ? AND accused_id = ? AND kind = ? AND status = 'open')
        RETURNING *`,
     )
     .bind(
@@ -233,11 +256,18 @@ export async function createCase(
       input.deadline,
       createdAt,
       input.guildId,
+      input.guildId,
+      input.accuserId,
+      input.kind,
+      MAX_OPEN_PER_KIND,
+      input.guildId,
+      input.accuserId,
+      input.accusedId,
+      input.kind,
     )
     .first<CaseRow>();
 
-  if (!row) throw new Error('createCase: insert returned no row');
-  return toCase(row);
+  return row ? toCase(row) : undefined;
 }
 
 /** A forum case lives in its own post: the thread id is both the channel and the message. */
@@ -251,16 +281,6 @@ export async function setCasePost(db: D1Database, caseId: number, threadId: stri
 export async function getCase(db: D1Database, caseId: number): Promise<Case | undefined> {
   const row = await db.prepare(`SELECT * FROM cases WHERE id = ?`).bind(caseId).first<CaseRow>();
   return row ? toCase(row) : undefined;
-}
-
-/** Open cases whose deadline has passed, oldest deadline first. */
-export async function getDueCases(db: D1Database, now: number): Promise<Case[]> {
-  const { results } = await db
-    .prepare(`SELECT * FROM cases WHERE status = 'open' AND deadline <= ? ORDER BY deadline ASC`)
-    .bind(now)
-    .all<CaseRow>();
-
-  return results.map(toCase);
 }
 
 /** Every open case in every guild, oldest deadline first, for the cron sweep. */
@@ -286,32 +306,36 @@ export async function countOpenCasesByAccuser(
   db: D1Database,
   guildId: string,
   accuserId: string,
+  kind: CaseKind,
 ): Promise<number> {
   const row = await db
     .prepare(
-      `SELECT COUNT(*) AS n FROM cases WHERE guild_id = ? AND accuser_id = ? AND status = 'open'`,
+      `SELECT COUNT(*) AS n
+         FROM cases
+        WHERE guild_id = ? AND accuser_id = ? AND kind = ? AND status = 'open'`,
     )
-    .bind(guildId, accuserId)
+    .bind(guildId, accuserId, kind)
     .first<{ n: number }>();
 
   return row?.n ?? 0;
 }
 
-/** Whether this accuser already has an open case against this target. */
+/** Whether this accuser already has an open case of this kind against this target. */
 export async function hasOpenCaseAgainst(
   db: D1Database,
   guildId: string,
   accuserId: string,
   accusedId: string,
+  kind: CaseKind,
 ): Promise<boolean> {
   const row = await db
     .prepare(
       `SELECT 1 AS hit
          FROM cases
-        WHERE guild_id = ? AND accuser_id = ? AND accused_id = ? AND status = 'open'
+        WHERE guild_id = ? AND accuser_id = ? AND accused_id = ? AND kind = ? AND status = 'open'
         LIMIT 1`,
     )
-    .bind(guildId, accuserId, accusedId)
+    .bind(guildId, accuserId, accusedId, kind)
     .first<{ hit: number }>();
 
   return row !== null;

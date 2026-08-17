@@ -62,7 +62,17 @@ export async function ensureTierRoles(rest: Rest, db: D1Database, guildId: strin
   let created = 0;
 
   for (const tier of TIERS) {
-    const found = existing.find((role: any) => role?.name === tier.title && typeof role?.id === 'string');
+    // Only a permissionless, unmanaged role is safe to adopt: a tier role gets
+    // handed to whoever the board says and repositioned under the bot, so
+    // adopting a real role by name would be a privilege escalation. A
+    // permissioned namesake is left alone and a fresh role created beside it.
+    const found = existing.find(
+      (role: any) =>
+        role?.name === tier.title &&
+        typeof role?.id === 'string' &&
+        role?.managed !== true &&
+        role?.permissions === '0',
+    );
     if (found) {
       tierRoles[tier.key] = String(found.id);
       adopted += 1;
