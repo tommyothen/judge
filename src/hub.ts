@@ -170,6 +170,8 @@ export async function setupCourt(
       name: 'courtroom',
       type: ChannelType.GuildText,
       parent_id: categoryId,
+      // Pinned above the forum; left to its defaults Discord sorts them the other way.
+      position: 0,
       permission_overwrites: [everyoneOverwrite(guildId, false), botOverwrite(botUserId)],
     });
     dashboardId = String(dashboard.id);
@@ -179,6 +181,7 @@ export async function setupCourt(
         name: 'cases',
         type: ChannelType.GuildForum,
         parent_id: categoryId,
+        position: 1,
         permission_overwrites: [everyoneOverwrite(guildId, true), botOverwrite(botUserId)],
         available_tags: CASE_TAGS.map((tag) => ({ name: tag.name })),
         default_auto_archive_duration: ThreadAutoArchiveDuration.OneDay,
