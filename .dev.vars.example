@@ -1,0 +1,17 @@
+# Copy this file to .dev.vars for local development. `wrangler dev` loads
+# .dev.vars automatically, and `pnpm register` reads it via --env-file.
+#
+# In production the bot token is a secret:
+#   wrangler secret put DISCORD_TOKEN
+# DISCORD_PUBLIC_KEY and DISCORD_CLIENT_ID are not sensitive, so they can go in
+# the `vars` block of wrangler.jsonc instead, or be set as secrets as well.
+
+# Bot token from the Discord developer portal (Bot -> Token).
+# DISCORD_TOKEN=
+
+# Public key used to verify incoming interaction signatures
+# (General Information -> Public Key).
+# DISCORD_PUBLIC_KEY=
+
+# Application ID of the Discord app (General Information -> Application ID).
+# DISCORD_CLIENT_ID=

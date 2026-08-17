@@ -1,0 +1,23 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "judge",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-13",
+	"observability": {
+		"enabled": true
+	},
+	// Runs every minute. The scheduled handler decides what actually needs doing.
+	"triggers": {
+		"crons": [
+			"* * * * *"
+		]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "judge",
+			"database_id": "14d02157-e37a-4489-80d9-4ba0c2555937",
+			"migrations_dir": "migrations"
+		}
+	]
+}
