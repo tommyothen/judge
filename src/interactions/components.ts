@@ -7,8 +7,9 @@ import {
   type APIMessageComponentInteraction,
   type APIModalInteractionResponseCallbackData,
 } from 'discord-api-types/v10';
-import { castVote, getCase, getRecordFor, touchName } from '../db.js';
-import { caseButtons, caseEmbed, recordEmbed } from '../embeds.js';
+import { castVote, closeCase, getCase, getRecordFor, getSettings, getTally, touchName } from '../db.js';
+import { caseButtons, caseEmbed, closedCaseEmbed, recordEmbed } from '../embeds.js';
+import { refreshHub, tagIdFor } from '../hub.js';
 import type { CaseKind } from '../types.js';
 import {
   bestName,
@@ -123,6 +124,7 @@ export async function handleComponent(
   const customId = interaction.data.custom_id;
 
   if (customId.startsWith('vote:')) return vote(interaction, c, customId);
+  if (customId.startsWith('withdraw:')) return withdraw(interaction, c, customId);
   if (customId === 'hub:file') {
     return json({ type: InteractionResponseType.Modal, data: filingModal('accuse') });
   }
@@ -181,6 +183,90 @@ async function vote(
     data: {
       embeds: [caseEmbed(filed, tally, accusedName, avatarUrl)],
       components: [caseButtons(filed, tally, false)],
+    },
+  });
+}
+
+/**
+ * The filer's escape hatch, next to the documented delete-the-post one. Voids
+ * the case in place: no verdict, no points, and the post is tagged and
+ * archived the same way a deletion would leave it.
+ */
+async function withdraw(
+  interaction: APIMessageComponentInteraction,
+  c: Ctx,
+  customId: string,
+): Promise<Response> {
+  const { env, rest } = c;
+  const db = env.DB;
+  const guildId = interaction.guild_id!;
+  const member = interaction.member!;
+
+  const caseId = Number(customId.split(':')[1]);
+  if (!Number.isInteger(caseId)) return ephemeral('That motion is unreadable.');
+
+  const filed = await getCase(db, caseId);
+  if (!filed || filed.status !== 'open' || filed.deadline <= Date.now()) {
+    return ephemeral('This case is past withdrawing.');
+  }
+  if (member.user.id !== filed.accuserId) {
+    return ephemeral('Only the filer may withdraw a case. You are welcome to vote instead.');
+  }
+
+  // The same open-only claim the cron uses, so a verdict and a withdrawal
+  // cannot both land.
+  if (!(await closeCase(db, filed.id, 'voided'))) {
+    return ephemeral('This case just closed. The verdict stands.');
+  }
+
+  const tally = await getTally(db, filed.id);
+  const accused = await fetchMember(rest, guildId, filed.accusedId);
+  const accusedName = await bestName(db, guildId, filed.accusedId, accused, null);
+  const avatarUrl = memberAvatarUrl(guildId, filed.accusedId, accused);
+
+  c.ctx.waitUntil(
+    (async () => {
+      try {
+        await rest.createMessage(filed.channelId, {
+          content: 'The filer has withdrawn the case. The court pretends it never happened.',
+        });
+      } catch (err) {
+        console.error(`posting the withdrawal note for case ${filed.id} failed`, err);
+      }
+
+      if (filed.messageId === filed.channelId) {
+        const settings = await getSettings(db, guildId);
+        const voidedTag = tagIdFor(settings, 'voided');
+        if (voidedTag) {
+          try {
+            await rest.editChannel(filed.channelId, { applied_tags: [voidedTag] });
+          } catch (err) {
+            console.error(`tagging withdrawn case ${filed.id} failed`, err);
+          }
+        }
+      }
+
+      if (filed.messageId) {
+        try {
+          await rest.archiveThread(filed.messageId);
+        } catch {
+          // No thread, or no permission to touch it. The case is void either way.
+        }
+      }
+
+      try {
+        await refreshHub(rest, db, guildId);
+      } catch (err) {
+        console.error(`refreshing the hub after withdrawing case ${filed.id} failed`, err);
+      }
+    })(),
+  );
+
+  return json({
+    type: InteractionResponseType.UpdateMessage,
+    data: {
+      embeds: [closedCaseEmbed(filed, tally, 'voided', accusedName, avatarUrl)],
+      components: [caseButtons(filed, tally, true)],
     },
   });
 }

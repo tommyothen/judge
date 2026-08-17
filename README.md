@@ -16,8 +16,8 @@ dashboard channel and a cases forum, and pins the hub message: the scoreboard, p
 case still open. Cases are filed from the hub's buttons, voted on with the buttons on the
 case post (one vote each, changeable until the deadline, and public: the case lists who
 voted which way), and decided automatically when the deadline passes. Below quorum the
-case is dismissed; otherwise a majority moves the points and ties acquit. Deleting a case
-post before the deadline voids it.
+case is dismissed; otherwise a majority moves the points and ties acquit. The filer can
+withdraw an open case with its Withdraw button, and deleting the case post voids it too.
 
 Defaults are a quorum of 3, a six-hour vote window, and standing shown as coloured,
 hoisted tier roles from Model citizen down to Beyond rehabilitation. The server owner can

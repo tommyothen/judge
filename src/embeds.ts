@@ -133,7 +133,9 @@ function outcomeText(kind: Case['kind'], status: CaseStatus): string {
   if (status === 'passed') return kind === 'accuse' ? 'Guilty' : 'Commended';
   if (status === 'failed') return kind === 'accuse' ? 'Not guilty' : 'Rejected';
   if (status === 'dismissed') return 'Dismissed, quorum not met';
-  if (status === 'voided') return 'Voided, the case message was deleted';
+  // A case voided by deletion has no embed left to edit, so a rendered voided
+  // case can only have been withdrawn.
+  if (status === 'voided') return 'Withdrawn by the filer';
   return 'Still open';
 }
 
@@ -182,6 +184,13 @@ export function caseButtons(
         style: ButtonStyle.Secondary,
         label: `${noLabel} (${tally.no})`,
         custom_id: `vote:${c.id}:no`,
+        disabled,
+      },
+      {
+        type: ComponentType.Button,
+        style: ButtonStyle.Secondary,
+        label: 'Withdraw',
+        custom_id: `withdraw:${c.id}`,
         disabled,
       },
     ],
