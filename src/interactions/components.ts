@@ -224,8 +224,23 @@ async function withdraw(
   const accusedName = await bestName(db, guildId, filed.accusedId, accused, null);
   const avatarUrl = memberAvatarUrl(guildId, filed.accusedId, accused);
 
+  // The tidy-up has to run in order: the case message must flip to its closed
+  // state before the thread archives, because an archived thread refuses
+  // edits. Answering with an UpdateMessage instead would race the archiving,
+  // so the interaction is deferred and the edit made explicitly first.
   c.ctx.waitUntil(
     (async () => {
+      if (filed.messageId) {
+        try {
+          await rest.editMessage(filed.channelId, filed.messageId, {
+            embeds: [closedCaseEmbed(filed, tally, 'voided', accusedName, avatarUrl)],
+            components: [caseButtons(filed, tally, true)],
+          });
+        } catch (err) {
+          console.error(`editing withdrawn case ${filed.id} failed`, err);
+        }
+      }
+
       try {
         await rest.createMessage(filed.channelId, {
           content: 'The filer has withdrawn the case. The court pretends it never happened.',
@@ -262,13 +277,7 @@ async function withdraw(
     })(),
   );
 
-  return json({
-    type: InteractionResponseType.UpdateMessage,
-    data: {
-      embeds: [closedCaseEmbed(filed, tally, 'voided', accusedName, avatarUrl)],
-      components: [caseButtons(filed, tally, true)],
-    },
-  });
+  return json({ type: InteractionResponseType.DeferredMessageUpdate });
 }
 
 async function record(interaction: APIMessageComponentInteraction, c: Ctx): Promise<Response> {
