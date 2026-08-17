@@ -24,8 +24,10 @@ hoisted tier roles from Model citizen down to Beyond rehabilitation. The server 
 change all three with `/settings`. Drag the Judge role to the top of the role list,
 because Discord will not let it re-role anyone ranked above it.
 
-Judge cannot read your messages. It has no gateway connection and no privileged intents;
-Discord only sends it commands and button presses. The permissions it asks for:
+Judge does not listen to your chat. It has no gateway connection and no privileged
+intents, so Discord only ever sends it commands and button presses. The one place it
+reads messages is the dashboard channel, which it sweeps to delete anything that is not
+the hub. The permissions it asks for:
 
 | Permission               | Why                                                     |
 | ------------------------ | ------------------------------------------------------- |
