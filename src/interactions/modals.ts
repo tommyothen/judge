@@ -1,21 +1,26 @@
 import {
   ComponentType,
+  InteractionResponseType,
   type APIModalSubmissionComponent,
   type APIModalSubmitInteraction,
   type ModalSubmitComponent,
 } from 'discord-api-types/v10';
+import { updateSettings } from '../db.js';
+import { isDurationChoice } from '../durations.js';
+import { settingsComponents, settingsEmbed } from '../embeds.js';
 import type { CaseKind } from '../types.js';
 import {
   deferEphemeral,
   ephemeral,
-  isDurationChoice,
   isPointTier,
+  json,
   memberDisplayName,
   resolvedDisplayName,
   resolvedIsBot,
   runFiling,
   type Ctx,
 } from './shared.js';
+import { QUORUM_MAX, QUORUM_MIN } from './components.js';
 
 /**
  * Modal submissions arrive as Label wrappers around one component each. Older
@@ -48,6 +53,7 @@ export async function handleModal(interaction: APIModalSubmitInteraction, c: Ctx
   }
 
   const customId = interaction.data.custom_id;
+  if (customId.startsWith('setq:')) return quorum(interaction, c, customId);
   if (customId !== 'file:accuse' && customId !== 'file:commend') {
     return ephemeral('The court does not recognise that form.');
   }
@@ -85,4 +91,26 @@ export async function handleModal(interaction: APIModalSubmitInteraction, c: Ctx
   );
 
   return deferEphemeral();
+}
+
+async function quorum(
+  interaction: APIModalSubmitInteraction,
+  c: Ctx,
+  customId: string,
+): Promise<Response> {
+  const ownerId = customId.split(':')[1];
+  if (interaction.member!.user.id !== ownerId) {
+    return ephemeral('This bench is not yours. Only the chief justice may sit here.');
+  }
+  const fields = flatten(interaction.data.components);
+  const value = Number(firstValue(fields.get('value')));
+  if (!Number.isInteger(value) || value < QUORUM_MIN || value > QUORUM_MAX) {
+    return ephemeral('Quorum is a number from 2 to 100. The court has standards, if not many.');
+  }
+  const updated = await updateSettings(c.env.DB, interaction.guild_id!, { quorum: value });
+  // A modal opened from a component may update that component's message.
+  return json({
+    type: InteractionResponseType.UpdateMessage,
+    data: { embeds: [settingsEmbed(updated)], components: settingsComponents(updated, ownerId) },
+  });
 }

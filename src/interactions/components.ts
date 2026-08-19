@@ -7,10 +7,12 @@ import {
   type APIMessageComponentInteraction,
   type APIModalInteractionResponseCallbackData,
 } from 'discord-api-types/v10';
-import { castVote, closeCase, getCase, getRecordFor, getSettings, getTally, touchName } from '../db.js';
-import { caseButtons, caseEmbed, closedCaseEmbed, recordEmbed } from '../embeds.js';
+import { castVote, closeCase, getCase, getRecordFor, getSettings, getTally, touchName, updateSettings } from '../db.js';
+import { DURATION_CHOICES, humanDuration, isDurationChoice } from '../durations.js';
+import { caseButtons, caseEmbed, closedCaseEmbed, recordEmbed, rollView, settingsComponents, settingsEmbed } from '../embeds.js';
 import { refreshHub, tagIdFor } from '../hub.js';
-import type { CaseKind } from '../types.js';
+import type { BallotMode, CaseKind, GuildSettings, StandingMode } from '../types.js';
+import { ensureTierRoles, resyncAllStanding, wantsNicknames, wantsRoles } from '../standing.js';
 import {
   bestName,
   ephemeral,
@@ -36,12 +38,19 @@ const SEVERITY_OPTIONS = {
   ],
 } as const;
 
-const DURATION_OPTIONS = [
-  { label: '10 minutes', value: '10' },
-  { label: '1 hour', value: '60' },
-  { label: '6 hours', value: '360' },
-  { label: '24 hours', value: '1440' },
-] as const;
+const DURATION_OPTIONS = DURATION_CHOICES.map((m) => ({ label: humanDuration(m), value: String(m) }));
+
+/** Big servers need real quorums, hence the ceiling well above the old 20. */
+export const QUORUM_MIN = 2;
+export const QUORUM_MAX = 100;
+
+/** What the court says when the mode changes. */
+const STANDING_CONFIRMATION: Record<StandingMode, string> = {
+  roles: 'Standing is a role now. Coloured, hoisted, and swapped the moment a score crosses a line.',
+  nicknames: 'Standing is a nickname suffix now, as "Sushi (130)".',
+  both: 'Standing is a role and a nickname suffix now.',
+  off: 'Standing is hidden. No roles, no numbers in names.',
+};
 
 function label(
   text: string,
@@ -113,6 +122,23 @@ export function filingModal(kind: CaseKind): APIModalInteractionResponseCallback
   };
 }
 
+export function quorumModal(ownerId: string, current: number): APIModalInteractionResponseCallbackData {
+  return {
+    custom_id: `setq:${ownerId}`,
+    title: 'Set the quorum',
+    components: [
+      label('Votes needed for a verdict', 'From 2 to 100. Below quorum a case is dismissed.', {
+        type: ComponentType.TextInput,
+        custom_id: 'value',
+        style: TextInputStyle.Short,
+        required: true,
+        max_length: 3,
+        placeholder: String(current),
+      }),
+    ],
+  };
+}
+
 export async function handleComponent(
   interaction: APIMessageComponentInteraction,
   c: Ctx,
@@ -123,6 +149,8 @@ export async function handleComponent(
 
   const customId = interaction.data.custom_id;
 
+  if (customId.startsWith('set:')) return settingsChange(interaction, c, customId);
+  if (customId.startsWith('roll:')) return roll(interaction, c, customId);
   if (customId.startsWith('vote:')) return vote(interaction, c, customId);
   if (customId.startsWith('withdraw:')) return withdraw(interaction, c, customId);
   if (customId === 'hub:file') {
@@ -134,6 +162,108 @@ export async function handleComponent(
   if (customId === 'hub:record') return record(interaction, c);
 
   return ephemeral('That button does nothing. The court is as surprised as you are.');
+}
+
+function panelUpdate(updated: GuildSettings, ownerId: string): Response {
+  return json({
+    type: InteractionResponseType.UpdateMessage,
+    data: { embeds: [settingsEmbed(updated)], components: settingsComponents(updated, ownerId) },
+  });
+}
+
+async function settingsChange(
+  interaction: APIMessageComponentInteraction,
+  c: Ctx,
+  customId: string,
+): Promise<Response> {
+  const [, field, ownerId] = customId.split(':');
+  if (interaction.member!.user.id !== ownerId) {
+    return ephemeral('This bench is not yours. Only the chief justice may sit here.');
+  }
+  const value = 'values' in interaction.data ? interaction.data.values[0] : undefined;
+  if (!value || !field || !ownerId) {
+    return ephemeral('That lever does nothing. The court is as surprised as you are.');
+  }
+
+  const { env, rest } = c;
+  const db = env.DB;
+  const guildId = interaction.guild_id!;
+  if (field === 'ballot') {
+    if (value !== 'public' && value !== 'anonymous' && value !== 'secret') {
+      return ephemeral('That lever does nothing. The court is as surprised as you are.');
+    }
+    return panelUpdate(await updateSettings(db, guildId, { ballot: value as BallotMode }), ownerId);
+  }
+  if (field === 'window') {
+    const minutes = Number(value);
+    if (!isDurationChoice(minutes)) {
+      return ephemeral('That lever does nothing. The court is as surprised as you are.');
+    }
+    return panelUpdate(await updateSettings(db, guildId, { defaultDurationMin: minutes }), ownerId);
+  }
+  if (field === 'quorum') {
+    if (value === 'custom') {
+      const current = await getSettings(db, guildId);
+      return json({ type: InteractionResponseType.Modal, data: quorumModal(ownerId, current.quorum) });
+    }
+    const quorum = Number(value);
+    if (!Number.isInteger(quorum) || quorum < QUORUM_MIN || quorum > QUORUM_MAX) {
+      return ephemeral('That lever does nothing. The court is as surprised as you are.');
+    }
+    return panelUpdate(await updateSettings(db, guildId, { quorum }), ownerId);
+  }
+  if (field === 'standing') {
+    if (value !== 'roles' && value !== 'nicknames' && value !== 'both' && value !== 'off') {
+      return ephemeral('That lever does nothing. The court is as surprised as you are.');
+    }
+    const mode: StandingMode = value;
+    c.ctx.waitUntil((async () => {
+      // The mode has to land before anything is resynced: resyncing against
+      // the old mode after a failed write would dress everyone up wrongly.
+      try {
+        await updateSettings(db, guildId, { standing: mode });
+      } catch (err) {
+        console.error('standing change failed', err);
+        try {
+          await rest.createFollowup(env.DISCORD_CLIENT_ID, interaction.token, {
+            content: 'The change did not take. The clerk blames the filing cabinet. Try again.',
+            flags: MessageFlags.Ephemeral,
+          });
+        } catch {
+          // The interaction token has expired or Discord is unwell.
+        }
+        return;
+      }
+
+      const lines = [STANDING_CONFIRMATION[mode]];
+      try {
+        if (wantsRoles(mode)) lines.push(await ensureTierRoles(rest, db, guildId));
+        if (wantsNicknames(mode)) {
+          lines.push('I cannot rename the server owner, and I cannot rename anyone whose highest role sits above mine. They keep plain names.');
+        }
+        lines.push('Working through the board now.');
+        const fresh = await getSettings(db, guildId);
+        await rest.editOriginal(env.DISCORD_CLIENT_ID, interaction.token, {
+          embeds: [settingsEmbed(fresh)],
+          components: settingsComponents(fresh, ownerId),
+        });
+        await rest.createFollowup(env.DISCORD_CLIENT_ID, interaction.token, {
+          content: lines.join('\n'),
+          flags: MessageFlags.Ephemeral,
+        });
+      } catch (err) {
+        console.error('standing change failed', err);
+      }
+
+      try {
+        await resyncAllStanding(rest, db, guildId);
+      } catch (err) {
+        console.error('resyncAllStanding failed', err);
+      }
+    })());
+    return json({ type: InteractionResponseType.DeferredMessageUpdate });
+  }
+  return ephemeral('That lever does nothing. The court is as surprised as you are.');
 }
 
 async function vote(
@@ -156,6 +286,7 @@ async function vote(
   if (!filed || filed.status !== 'open' || filed.deadline <= Date.now()) {
     return ephemeral('Voting has ended on this case.');
   }
+  const settings = await getSettings(db, guildId);
 
   const voterId = member.user.id;
   const { tally, changed, already } = await castVote(db, caseId, voterId, rawChoice);
@@ -181,8 +312,8 @@ async function vote(
   return json({
     type: InteractionResponseType.UpdateMessage,
     data: {
-      embeds: [caseEmbed(filed, tally, accusedName, avatarUrl)],
-      components: [caseButtons(filed, tally, false)],
+      embeds: [caseEmbed(filed, tally, accusedName, avatarUrl, settings)],
+      components: [caseButtons(filed, tally, false, settings.ballot)],
     },
   });
 }
@@ -212,6 +343,7 @@ async function withdraw(
   if (member.user.id !== filed.accuserId) {
     return ephemeral('Only the filer may withdraw a case. You are welcome to vote instead.');
   }
+  const settings = await getSettings(db, guildId);
 
   // The same open-only claim the cron uses, so a verdict and a withdrawal
   // cannot both land.
@@ -233,8 +365,8 @@ async function withdraw(
       if (filed.messageId) {
         try {
           await rest.editMessage(filed.channelId, filed.messageId, {
-            embeds: [closedCaseEmbed(filed, tally, 'voided', accusedName, avatarUrl)],
-            components: [caseButtons(filed, tally, true)],
+            embeds: [closedCaseEmbed(filed, tally, 'voided', accusedName, avatarUrl, settings.ballot)],
+            components: [caseButtons(filed, tally, true, settings.ballot)],
           });
         } catch (err) {
           console.error(`editing withdrawn case ${filed.id} failed`, err);
@@ -250,7 +382,6 @@ async function withdraw(
       }
 
       if (filed.messageId === filed.channelId) {
-        const settings = await getSettings(db, guildId);
         const voidedTag = tagIdFor(settings, 'voided');
         if (voidedTag) {
           try {
@@ -278,6 +409,54 @@ async function withdraw(
   );
 
   return json({ type: InteractionResponseType.DeferredMessageUpdate });
+}
+
+async function roll(
+  interaction: APIMessageComponentInteraction,
+  c: Ctx,
+  customId: string,
+): Promise<Response> {
+  const parts = customId.split(':');
+  const [, rawCaseId, rawPage] = parts;
+  const caseId = Number(rawCaseId);
+  const page = Number(rawPage);
+  if (
+    parts.length !== 3
+    || rawCaseId === ''
+    || rawPage === ''
+    || !Number.isInteger(caseId)
+    || !Number.isInteger(page)
+  ) {
+    return ephemeral('That ledger is unreadable.');
+  }
+
+  const db = c.env.DB;
+  const filed = await getCase(db, caseId);
+  if (!filed) return ephemeral('That case has left the record.');
+
+  const settings = await getSettings(db, interaction.guild_id!);
+  // The mode can change after the button was printed.
+  if (settings.ballot !== 'public') {
+    return ephemeral('The ballots are not public in this court.');
+  }
+
+  const tally = await getTally(db, caseId);
+  if (tally.yes + tally.no === 0) return ephemeral('Nobody has voted yet.');
+
+  const { embed, components } = rollView(filed, tally, page);
+  // The case post is a regular channel message. The roll is the only
+  // ephemeral message carrying roll ids.
+  const fromRoll = ((interaction.message.flags ?? 0) & MessageFlags.Ephemeral) !== 0;
+  return json({
+    type: fromRoll
+      ? InteractionResponseType.UpdateMessage
+      : InteractionResponseType.ChannelMessageWithSource,
+    data: {
+      embeds: [embed],
+      components,
+      ...(fromRoll ? {} : { flags: MessageFlags.Ephemeral }),
+    },
+  });
 }
 
 async function record(interaction: APIMessageComponentInteraction, c: Ctx): Promise<Response> {

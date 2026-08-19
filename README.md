@@ -14,15 +14,20 @@ get a case number, a jury, and a permanent record.
 run `/setup`. The bot builds a category with a locked
 dashboard channel and a cases forum, and pins the hub message: the scoreboard, plus every
 case still open. Cases are filed from the hub's buttons, voted on with the buttons on the
-case post (one vote each, changeable until the deadline, and public: the case lists who
-voted which way), and decided automatically when the deadline passes. Below quorum the
-case is dismissed; otherwise a majority moves the points and ties acquit. The filer can
-withdraw an open case with its Withdraw button, and deleting the case post voids it too.
+case post (one vote each, changeable until the deadline, and public by default: the case
+lists who voted which way, unless the owner switches to anonymous or secret ballots; past
+twenty voters a side, the case shows counts and the full roll moves behind a button), and
+decided automatically when the deadline passes. Below quorum the case is dismissed;
+otherwise a majority moves the points and ties acquit. The filer can withdraw an open case
+with its Withdraw button, and deleting the case post voids it too.
 
 Defaults are a quorum of 3, a six-hour vote window, and standing shown as coloured,
 hoisted tier roles from Model citizen down to Beyond rehabilitation. The server owner can
-change all three with `/settings`. Drag the Judge role to the top of the role list,
-because Discord will not let it re-role anyone ranked above it.
+change all of it from the `/settings` panel: quorum from 2 to 100, vote windows from ten
+minutes to seven days, ballots that are public, anonymous (tallies but no names), or
+secret (sealed until the verdict), and how standing is shown. The bigger the server, the
+more a secret ballot and a longer window earn their keep. Drag the Judge role to the top
+of the role list, because Discord will not let it re-role anyone ranked above it.
 
 Judge does not listen to your chat. It has no gateway connection and no privileged
 intents, so Discord only ever sends it commands and button presses. The one place it

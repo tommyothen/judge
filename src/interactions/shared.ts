@@ -31,8 +31,6 @@ export interface Ctx {
 export const REASON_MAX = 200;
 /** The three severity and magnitude tiers, as points. */
 export const POINT_TIERS = [1, 3, 5] as const;
-/** Vote windows offered anywhere a duration can be chosen. */
-export const DURATION_CHOICES = [10, 60, 360, 1440] as const;
 
 /** Nickname sync writes " (12)" onto names; never store that back as a display name. */
 const SCORE_SUFFIX = /\s*\(-?\d+\)$/;
@@ -148,22 +146,8 @@ export async function bestName(
 // Misc
 // ---------------------------------------------------------------------------
 
-export function humanDuration(minutes: number): string {
-  if (minutes === 60) return '1 hour';
-  if (minutes % 1440 === 0) {
-    const days = minutes / 1440;
-    return days === 1 ? '24 hours' : `${days} days`;
-  }
-  if (minutes % 60 === 0) return `${minutes / 60} hours`;
-  return `${minutes} minutes`;
-}
-
 export function isPointTier(value: number): boolean {
   return (POINT_TIERS as readonly number[]).includes(value);
-}
-
-export function isDurationChoice(value: number): boolean {
-  return (DURATION_CHOICES as readonly number[]).includes(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,8 +269,8 @@ export async function runFiling(c: Ctx, req: FilingRequest): Promise<void> {
       auto_archive_duration: ThreadAutoArchiveDuration.OneDay,
       applied_tags: openTag ? [openTag] : [],
       message: {
-        embeds: [caseEmbed(filed, tally, accusedName, avatarUrl)],
-        components: [caseButtons(filed, tally, false)],
+        embeds: [caseEmbed(filed, tally, accusedName, avatarUrl, settings)],
+        components: [caseButtons(filed, tally, false, settings.ballot)],
       },
     });
     const threadId = String(post.id);

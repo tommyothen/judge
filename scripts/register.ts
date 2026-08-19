@@ -51,69 +51,9 @@ const commands: RESTPutAPIApplicationCommandsJSONBody = [
   {
     type: ApplicationCommandType.ChatInput,
     name: 'settings',
-    description: 'Adjust how the court runs.',
+    description: 'Open the court settings.',
     ...guildOnly,
     default_member_permissions: MANAGE_GUILD,
-    options: [
-      {
-        type: ApplicationCommandOptionType.Subcommand,
-        name: 'show',
-        description: 'Show the current settings.',
-      },
-      {
-        type: ApplicationCommandOptionType.Subcommand,
-        name: 'quorum',
-        description: 'Set how many votes a verdict needs.',
-        options: [
-          {
-            type: ApplicationCommandOptionType.Integer,
-            name: 'value',
-            description: 'Between 2 and 20 votes.',
-            required: true,
-            min_value: 2,
-            max_value: 20,
-          },
-        ],
-      },
-      {
-        type: ApplicationCommandOptionType.Subcommand,
-        name: 'duration',
-        description: 'Set the default vote window for new cases.',
-        options: [
-          {
-            type: ApplicationCommandOptionType.Integer,
-            name: 'value',
-            description: 'How long new cases run.',
-            required: true,
-            choices: [
-              { name: '10 minutes', value: 10 },
-              { name: '1 hour', value: 60 },
-              { name: '6 hours', value: 360 },
-              { name: '24 hours', value: 1440 },
-            ],
-          },
-        ],
-      },
-      {
-        type: ApplicationCommandOptionType.Subcommand,
-        name: 'standing',
-        description: 'Show standing as tier roles, nicknames, both, or neither.',
-        options: [
-          {
-            type: ApplicationCommandOptionType.String,
-            name: 'mode',
-            description: 'How standing is shown.',
-            required: true,
-            choices: [
-              { name: 'roles', value: 'roles' },
-              { name: 'nicknames', value: 'nicknames' },
-              { name: 'both', value: 'both' },
-              { name: 'off', value: 'off' },
-            ],
-          },
-        ],
-      },
-    ],
   },
   {
     type: ApplicationCommandType.ChatInput,

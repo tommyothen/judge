@@ -196,8 +196,8 @@ async function resolveCase(
 
     try {
       await rest.editMessage(messageId, messageId, {
-        embeds: [closedCaseEmbed(filed, tally, status, accusedName, avatarUrl)],
-        components: [caseButtons(filed, tally, true)],
+        embeds: [closedCaseEmbed(filed, tally, status, accusedName, avatarUrl, settings.ballot)],
+        components: [caseButtons(filed, tally, true, settings.ballot)],
       });
     } catch (err) {
       console.error(`editing the forum post for case ${filed.id} failed`, err);
@@ -229,8 +229,8 @@ async function resolveCase(
   } else {
     try {
       await rest.editMessage(filed.channelId, messageId, {
-        embeds: [closedCaseEmbed(filed, tally, status, accusedName, avatarUrl)],
-        components: [caseButtons(filed, tally, true)],
+        embeds: [closedCaseEmbed(filed, tally, status, accusedName, avatarUrl, settings.ballot)],
+        components: [caseButtons(filed, tally, true, settings.ballot)],
       });
     } catch (err) {
       console.error(`editing the message for case ${filed.id} failed`, err);

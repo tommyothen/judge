@@ -1,4 +1,5 @@
 import type {
+  BallotMode,
   Case,
   CaseKind,
   CaseStatus,
@@ -22,6 +23,7 @@ interface SettingsRow {
   hub_message_id: string | null;
   tags_json: string | null;
   standing: string;
+  ballot: string;
   tier_roles_json: string | null;
   nickname_sync: number;
 }
@@ -45,6 +47,8 @@ interface CaseRow {
 const DEFAULT_QUORUM = 3;
 const DEFAULT_DURATION_MIN = 360;
 const DEFAULT_STANDING: StandingMode = 'roles';
+const DEFAULT_BALLOT: BallotMode = 'public';
+const BALLOT_MODES: BallotMode[] = ['public', 'anonymous', 'secret'];
 
 const STANDING_MODES: StandingMode[] = ['nicknames', 'roles', 'both', 'off'];
 
@@ -59,6 +63,7 @@ function defaultSettings(guildId: string): GuildSettings {
     hubMessageId: null,
     tags: null,
     standing: DEFAULT_STANDING,
+    ballot: DEFAULT_BALLOT,
     tierRoles: null,
     nicknameSync: true,
   };
@@ -81,6 +86,10 @@ function toStanding(value: string): StandingMode {
   return STANDING_MODES.includes(value as StandingMode) ? (value as StandingMode) : DEFAULT_STANDING;
 }
 
+function toBallot(value: string): BallotMode {
+  return BALLOT_MODES.includes(value as BallotMode) ? (value as BallotMode) : DEFAULT_BALLOT;
+}
+
 function toSettings(row: SettingsRow): GuildSettings {
   return {
     guildId: row.guild_id,
@@ -92,6 +101,7 @@ function toSettings(row: SettingsRow): GuildSettings {
     hubMessageId: row.hub_message_id,
     tags: parseMap(row.tags_json),
     standing: toStanding(row.standing),
+    ballot: toBallot(row.ballot),
     tierRoles: parseMap(row.tier_roles_json),
     nicknameSync: row.nickname_sync !== 0,
   };
@@ -124,7 +134,7 @@ export async function getSettings(db: D1Database, guildId: string): Promise<Guil
   const row = await db
     .prepare(
       `SELECT guild_id, quorum, default_duration_min, category_id, court_channel_id, forum_channel_id,
-              hub_message_id, tags_json, standing, tier_roles_json, nickname_sync
+              hub_message_id, tags_json, standing, ballot, tier_roles_json, nickname_sync
          FROM guild_settings
         WHERE guild_id = ?`,
     )
@@ -147,6 +157,7 @@ const SETTINGS_COLUMNS: Record<
   hubMessageId: { column: 'hub_message_id', encode: (m) => m.hubMessageId },
   tags: { column: 'tags_json', encode: (m) => (m.tags === null ? null : JSON.stringify(m.tags)) },
   standing: { column: 'standing', encode: (m) => m.standing },
+  ballot: { column: 'ballot', encode: (m) => m.ballot },
   tierRoles: {
     column: 'tier_roles_json',
     encode: (m) => (m.tierRoles === null ? null : JSON.stringify(m.tierRoles)),
@@ -193,7 +204,7 @@ export async function getConfiguredGuilds(db: D1Database): Promise<GuildSettings
   const { results } = await db
     .prepare(
       `SELECT guild_id, quorum, default_duration_min, category_id, court_channel_id, forum_channel_id,
-              hub_message_id, tags_json, standing, tier_roles_json, nickname_sync
+              hub_message_id, tags_json, standing, ballot, tier_roles_json, nickname_sync
          FROM guild_settings
         WHERE court_channel_id IS NOT NULL`,
     )

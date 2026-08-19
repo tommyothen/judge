@@ -6,8 +6,9 @@ import {
   type APIEmbed,
   type APIEmbedField,
 } from 'discord-api-types/v10';
+import { DURATION_CHOICES, humanDuration } from './durations.js';
 import { titleFor } from './flavor.js';
-import type { Case, CaseStatus, ScoreRow, VoteTally } from './types.js';
+import type { BallotMode, Case, CaseStatus, GuildSettings, ScoreRow, StandingMode, VoteTally } from './types.js';
 
 const COLOUR = {
   /** open accusation */
@@ -69,14 +70,28 @@ function tallyValue(kind: Case['kind'], tally: VoteTally): string {
   return `${labels.yes} ${tally.yes} · ${labels.no} ${tally.no}`;
 }
 
-/** Embed field values cap at 1024 characters; a mention is ~22 of them. */
+/** Below this many votes the raw counts speak for themselves. */
+const BAR_MIN_VOTES = 25;
+
+function voteBar(kind: Case['kind'], tally: VoteTally): string {
+  const total = tally.yes + tally.no;
+  const pct = Math.round((tally.yes / total) * 100);
+  const filled = Math.round((tally.yes / total) * 10);
+  const bar = '▰'.repeat(filled) + '▱'.repeat(10 - filled);
+  return `${bar} ${pct}% ${voteLabels(kind).yes.toLowerCase()}`;
+}
+
+/**
+ * A side inside the cap is listed in full. Past it, the embed defers to the
+ * roll because the first 20 of 630 names is trivia and the field has a
+ * 1024-character budget anyway.
+ */
 const JURY_SHOWN_MAX = 20;
 
 function juryLine(label: string, voters: string[]): string {
   if (voters.length === 0) return `${label} · nobody`;
-  const shown = voters.slice(0, JURY_SHOWN_MAX).map((id) => `<@${id}>`).join(' ');
-  const extra = voters.length > JURY_SHOWN_MAX ? ` and ${voters.length - JURY_SHOWN_MAX} more` : '';
-  return `${label} · ${shown}${extra}`;
+  if (voters.length > JURY_SHOWN_MAX) return `${label} · ${voters.length} names on the roll`;
+  return `${label} · ${voters.map((id) => `<@${id}>`).join(' ')}`;
 }
 
 function juryField(kind: Case['kind'], tally: VoteTally): APIEmbedField {
@@ -113,15 +128,33 @@ export function caseEmbed(
   tally: VoteTally,
   accusedName: string,
   accusedAvatarUrl: string | null,
+  settings: GuildSettings,
 ): APIEmbed {
   const embed = baseEmbed(c, accusedName, accusedAvatarUrl);
   const sec = seconds(c.deadline);
   const fields: APIEmbedField[] = [
     { name: 'Stakes', value: stakesValue(c), inline: true },
     { name: 'Verdict', value: `<t:${sec}:R>, at <t:${sec}:t>`, inline: true },
-    { name: 'Tally', value: tallyValue(c.kind, tally), inline: true },
-    juryField(c.kind, tally),
+    {
+      name: 'Tally',
+      value: [
+        settings.ballot === 'secret'
+          ? `${tally.yes + tally.no} ballot${tally.yes + tally.no === 1 ? '' : 's'} in the box · sealed until the verdict`
+          : tallyValue(c.kind, tally),
+        tally.yes + tally.no < settings.quorum
+          ? `${tally.yes + tally.no} of ${settings.quorum} toward quorum`
+          : 'quorum met',
+        ...(settings.ballot !== 'secret' && tally.yes + tally.no >= BAR_MIN_VOTES
+          ? [voteBar(c.kind, tally)]
+          : []),
+      ].join('\n'),
+      inline: true,
+    },
   ];
+  if (settings.ballot === 'public') fields.push(juryField(c.kind, tally));
+  if (settings.ballot === 'anonymous') {
+    fields.push({ name: 'The jury', value: 'Deliberates in private. Only the tally is public.' });
+  }
 
   embed.color = c.kind === 'accuse' ? COLOUR.amber : COLOUR.blue;
   embed.fields = fields;
@@ -150,24 +183,42 @@ export function closedCaseEmbed(
   status: CaseStatus,
   accusedName: string,
   accusedAvatarUrl: string | null,
+  ballot: BallotMode,
 ): APIEmbed {
   const embed = baseEmbed(c, accusedName, accusedAvatarUrl);
   embed.color = closedColour(c.kind, status);
-  embed.fields = [
+  const fields: APIEmbedField[] = [
     { name: 'Stakes', value: stakesValue(c), inline: true },
     { name: 'Verdict', value: outcomeText(c.kind, status), inline: true },
-    { name: 'Final tally', value: tallyValue(c.kind, tally), inline: true },
-    juryField(c.kind, tally),
+    {
+      name: 'Final tally',
+      value: [
+        tallyValue(c.kind, tally),
+        ...(ballot !== 'secret' && tally.yes + tally.no >= BAR_MIN_VOTES
+          ? [voteBar(c.kind, tally)]
+          : []),
+      ].join('\n'),
+      inline: true,
+    },
   ];
+  fields.push(
+    ballot === 'public'
+      ? juryField(c.kind, tally)
+      : { name: 'The jury', value: 'Deliberated in private.' },
+  );
+  embed.fields = fields;
   return embed;
 }
 
 export function caseButtons(
   c: Case,
   tally: VoteTally,
-  disabled: boolean,
+  closed: boolean,
+  ballot: BallotMode,
 ): APIActionRowComponent<APIComponentInMessageActionRow> {
   const { yes: yesLabel, no: noLabel } = voteLabels(c.kind);
+  // A secret ballot leaks through button labels, so counts only appear once public.
+  const showCounts = ballot !== 'secret' || closed;
 
   return {
     type: ComponentType.ActionRow,
@@ -175,26 +226,186 @@ export function caseButtons(
       {
         type: ComponentType.Button,
         style: c.kind === 'accuse' ? ButtonStyle.Danger : ButtonStyle.Success,
-        label: `${yesLabel} (${tally.yes})`,
+        label: showCounts ? `${yesLabel} (${tally.yes})` : yesLabel,
         custom_id: `vote:${c.id}:yes`,
-        disabled,
+        disabled: closed,
       },
       {
         type: ComponentType.Button,
         style: ButtonStyle.Secondary,
-        label: `${noLabel} (${tally.no})`,
+        label: showCounts ? `${noLabel} (${tally.no})` : noLabel,
         custom_id: `vote:${c.id}:no`,
-        disabled,
+        disabled: closed,
       },
       {
         type: ComponentType.Button,
         style: ButtonStyle.Secondary,
         label: 'Withdraw',
         custom_id: `withdraw:${c.id}`,
-        disabled,
+        disabled: closed,
       },
+      ...(ballot === 'public' && (tally.yes > JURY_SHOWN_MAX || tally.no > JURY_SHOWN_MAX)
+        ? [{
+            type: ComponentType.Button as const,
+            style: ButtonStyle.Secondary as const,
+            label: 'The roll',
+            custom_id: `roll:${c.id}:0`,
+            // The vote ends but the record stays public, so the roll outlives the verdict.
+            disabled: false,
+          }]
+        : []),
     ],
   };
+}
+
+/** About 70 mentions a page keeps the description far under the 4096 cap. */
+const ROLL_PAGE_LINES = 14;
+
+export function rollView(
+  c: Case,
+  tally: VoteTally,
+  page: number,
+): { embed: APIEmbed; components: APIActionRowComponent<APIComponentInMessageActionRow>[] } {
+  const labels = voteLabels(c.kind);
+  const lines: string[] = [];
+  const addSide = (label: string, voters: string[]): void => {
+    if (voters.length === 0) return;
+    if (lines.length > 0) lines.push('');
+    lines.push(`**${label} · ${voters.length}**`);
+    for (let i = 0; i < voters.length; i += 5) {
+      lines.push(voters.slice(i, i + 5).map((id) => `<@${id}>`).join(' '));
+    }
+  };
+  addSide(labels.yes, tally.yesVoters);
+  addSide(labels.no, tally.noVoters);
+
+  const pages = Math.max(1, Math.ceil(lines.length / ROLL_PAGE_LINES));
+  const currentPage = Math.min(Math.max(page, 0), pages - 1);
+  const total = tally.yes + tally.no;
+  const embed: APIEmbed = {
+    color: COLOUR.parchment,
+    title: `Case #${c.number} · the roll`,
+    description: lines
+      .slice(currentPage * ROLL_PAGE_LINES, (currentPage + 1) * ROLL_PAGE_LINES)
+      .join('\n'),
+    footer: {
+      text: `Page ${currentPage + 1} of ${pages} · ${total} ballot${total === 1 ? '' : 's'}`,
+    },
+  };
+  if (pages === 1) return { embed, components: [] };
+
+  return {
+    embed,
+    components: [{
+      type: ComponentType.ActionRow,
+      components: [
+        {
+          type: ComponentType.Button,
+          style: ButtonStyle.Secondary,
+          label: 'Back',
+          custom_id: `roll:${c.id}:${currentPage - 1}`,
+          disabled: currentPage === 0,
+        },
+        {
+          type: ComponentType.Button,
+          style: ButtonStyle.Secondary,
+          label: 'Next',
+          custom_id: `roll:${c.id}:${currentPage + 1}`,
+          disabled: currentPage === pages - 1,
+        },
+      ],
+    }],
+  };
+}
+
+const BALLOT_SHORT: Record<BallotMode, string> = {
+  public: 'Public',
+  anonymous: 'Anonymous',
+  secret: 'Secret',
+};
+
+const STANDING_SHORT: Record<StandingMode, string> = {
+  roles: 'Tier roles',
+  nicknames: 'Nickname suffixes',
+  both: 'Roles and nicknames',
+  off: 'Off',
+};
+
+export function settingsEmbed(s: GuildSettings): APIEmbed {
+  const courtroom =
+    s.courtChannelId && s.forumChannelId
+      ? `Dashboard <#${s.courtChannelId}> · cases in <#${s.forumChannelId}>`
+      : 'Not built yet. Run /setup and the court will raise its own walls.';
+  return {
+    color: COLOUR.parchment,
+    title: 'Court settings',
+    description: 'The court as currently constituted. Adjust it with the menus below.',
+    fields: [
+      { name: 'Quorum', value: `${s.quorum} votes`, inline: true },
+      { name: 'Vote window', value: humanDuration(s.defaultDurationMin), inline: true },
+      { name: 'Ballot', value: BALLOT_SHORT[s.ballot], inline: true },
+      { name: 'Standing', value: STANDING_SHORT[s.standing], inline: true },
+      { name: 'Courtroom', value: courtroom },
+    ],
+    footer: { text: 'Changes apply from the next vote or filing.' },
+  };
+}
+
+export function settingsComponents(
+  s: GuildSettings,
+  ownerId: string,
+): APIActionRowComponent<APIComponentInMessageActionRow>[] {
+  const quorumChoices = [2, 3, 5, 7, 10, 15, 20, 30, 50];
+  return [
+    {
+      type: ComponentType.ActionRow,
+      components: [{
+        type: ComponentType.StringSelect,
+        custom_id: `set:ballot:${ownerId}`,
+        placeholder: `Ballot: ${BALLOT_SHORT[s.ballot]}`,
+        options: [
+          { label: 'Public ballots', value: 'public', description: 'The case lists who voted which way.', default: s.ballot === 'public' },
+          { label: 'Anonymous ballots', value: 'anonymous', description: 'Running tallies, but never names.', default: s.ballot === 'anonymous' },
+          { label: 'Secret ballots', value: 'secret', description: 'The tally stays sealed until the verdict.', default: s.ballot === 'secret' },
+        ],
+      }],
+    },
+    {
+      type: ComponentType.ActionRow,
+      components: [{
+        type: ComponentType.StringSelect,
+        custom_id: `set:quorum:${ownerId}`,
+        placeholder: `Quorum: ${s.quorum} votes`,
+        options: [
+          ...quorumChoices.map((n) => ({ label: `${n} votes`, value: String(n), default: s.quorum === n })),
+          { label: 'Custom…', value: 'custom', description: 'Any number from 2 to 100.' },
+        ],
+      }],
+    },
+    {
+      type: ComponentType.ActionRow,
+      components: [{
+        type: ComponentType.StringSelect,
+        custom_id: `set:window:${ownerId}`,
+        placeholder: `Vote window: ${humanDuration(s.defaultDurationMin)}`,
+        options: DURATION_CHOICES.map((m) => ({ label: humanDuration(m), value: String(m), default: s.defaultDurationMin === m })),
+      }],
+    },
+    {
+      type: ComponentType.ActionRow,
+      components: [{
+        type: ComponentType.StringSelect,
+        custom_id: `set:standing:${ownerId}`,
+        placeholder: `Standing: ${STANDING_SHORT[s.standing]}`,
+        options: [
+          { label: 'Tier roles', value: 'roles', description: 'Coloured, hoisted roles from Model citizen down.', default: s.standing === 'roles' },
+          { label: 'Nickname suffixes', value: 'nicknames', description: 'The score written into nicknames, as "Sushi (130)".', default: s.standing === 'nicknames' },
+          { label: 'Roles and nicknames', value: 'both', description: 'Both at once.', default: s.standing === 'both' },
+          { label: 'Off', value: 'off', description: 'No public standing.', default: s.standing === 'off' },
+        ],
+      }],
+    },
+  ];
 }
 
 /** A forum case links to its post; a legacy case links to its message. */

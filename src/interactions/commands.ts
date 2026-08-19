@@ -2,23 +2,22 @@ import {
   ApplicationCommandOptionType,
   ApplicationCommandType,
   InteractionType,
+  InteractionResponseType,
+  MessageFlags,
   type APIApplicationCommandInteraction,
   type APIApplicationCommandInteractionDataBasicOption,
   type APIApplicationCommandInteractionDataOption,
   type APIChatInputApplicationCommandInteraction,
 } from 'discord-api-types/v10';
-import { getRecordFor, getSettings, touchName, updateSettings } from '../db.js';
-import { recordEmbed } from '../embeds.js';
+import { getRecordFor, getSettings, touchName } from '../db.js';
+import { recordEmbed, settingsComponents, settingsEmbed } from '../embeds.js';
 import { setupCourt } from '../hub.js';
-import { ensureTierRoles, resyncAllStanding, wantsNicknames, wantsRoles } from '../standing.js';
 import type { Rest } from '../discord/rest.js';
-import type { StandingMode } from '../types.js';
 import {
   deferEphemeral,
   ephemeral,
   ephemeralEmbed,
-  humanDuration,
-  isDurationChoice,
+  json,
   memberDisplayName,
   resolvedDisplayName,
   storedName,
@@ -44,27 +43,6 @@ function optionMap(options: CommandOption[] | undefined): Map<string, BasicOptio
   return map;
 }
 
-function subcommandOf(
-  options: CommandOption[] | undefined,
-): { name: string; options: Map<string, BasicOption> } | null {
-  for (const option of options ?? []) {
-    if (option.type === ApplicationCommandOptionType.Subcommand) {
-      return { name: option.name, options: optionMap(option.options) };
-    }
-  }
-  return null;
-}
-
-function stringOpt(options: Map<string, BasicOption>, name: string): string | null {
-  const option = options.get(name);
-  return option?.type === ApplicationCommandOptionType.String ? option.value : null;
-}
-
-function intOpt(options: Map<string, BasicOption>, name: string): number | null {
-  const option = options.get(name);
-  return option?.type === ApplicationCommandOptionType.Integer ? option.value : null;
-}
-
 function userOpt(options: Map<string, BasicOption>, name: string): string | null {
   const option = options.get(name);
   return option?.type === ApplicationCommandOptionType.User ? option.value : null;
@@ -73,26 +51,6 @@ function userOpt(options: Map<string, BasicOption>, name: string): string | null
 function channelOpt(options: Map<string, BasicOption>, name: string): string | null {
   const option = options.get(name);
   return option?.type === ApplicationCommandOptionType.Channel ? option.value : null;
-}
-
-/** How /settings show names each standing mode. */
-const STANDING_LABEL: Record<StandingMode, string> = {
-  roles: 'tier roles',
-  nicknames: 'score suffixes in nicknames',
-  both: 'tier roles and score suffixes',
-  off: 'off, nothing on display',
-};
-
-/** What the court says when the mode changes. */
-const STANDING_CONFIRMATION: Record<StandingMode, string> = {
-  roles: 'Standing is a role now. Coloured, hoisted, and swapped the moment a score crosses a line.',
-  nicknames: 'Standing is a nickname suffix now, as "Sushi (130)".',
-  both: 'Standing is a role and a nickname suffix now.',
-  off: 'Standing is hidden. No roles, no numbers in names.',
-};
-
-function isStandingMode(value: string | null): value is StandingMode {
-  return value === 'roles' || value === 'nicknames' || value === 'both' || value === 'off';
 }
 
 /**
@@ -170,100 +128,17 @@ async function settings(
   const denied = await benchCheck(c.rest, guildId, interaction.member!.user.id);
   if (denied) return denied;
 
-  const db = c.env.DB;
-  const sub = subcommandOf(interaction.data.options);
-  if (!sub) return ephemeral('Tell the court which setting you mean.');
-
-  if (sub.name === 'show') {
-    const current = await getSettings(db, guildId);
-    const lines = [
-      `Quorum: ${current.quorum} votes before a verdict counts.`,
-      `Default vote window: ${humanDuration(current.defaultDurationMin)}.`,
-      current.courtChannelId
-        ? `Dashboard: <#${current.courtChannelId}>.`
-        : 'Dashboard: not set. Run /setup to build the court.',
-      current.forumChannelId
-        ? `Cases forum: <#${current.forumChannelId}>.`
-        : 'Cases forum: not set. Run /setup.',
-      `Standing: ${STANDING_LABEL[current.standing]}.`,
-    ];
-    return ephemeral(lines.join('\n'));
-  }
-
-  if (sub.name === 'quorum') {
-    const value = intOpt(sub.options, 'value');
-    if (value === null || value < 2 || value > 20) {
-      return ephemeral('Quorum must be between 2 and 20. The court has standards, if not many.');
-    }
-    await updateSettings(db, guildId, { quorum: value });
-    return ephemeral(`Quorum set to ${value}. Democracy calibrated.`);
-  }
-
-  if (sub.name === 'duration') {
-    const value = intOpt(sub.options, 'value');
-    if (value === null || !isDurationChoice(value)) {
-      return ephemeral('Pick one of the offered vote windows. The court keeps office hours.');
-    }
-    await updateSettings(db, guildId, { defaultDurationMin: value });
-    return ephemeral(`New cases will run for ${humanDuration(value)}. Justice at its own pace.`);
-  }
-
-  if (sub.name === 'standing') {
-    const mode = stringOpt(sub.options, 'mode');
-    if (!isStandingMode(mode)) {
-      return ephemeral('Pick one of the offered standings. The court keeps a short list.');
-    }
-
-    // Creating eight roles and walking the board is far more than an
-    // interaction reply has time for, so the answer is deferred like /setup.
-    const { env, rest } = c;
-    c.ctx.waitUntil(
-      (async () => {
-        // The mode has to land before anything is resynced: resyncing against
-        // the old mode after a failed write would dress everyone up wrongly.
-        try {
-          await updateSettings(db, guildId, { standing: mode });
-        } catch (err) {
-          console.error('standing change failed', err);
-          try {
-            await rest.editOriginal(env.DISCORD_CLIENT_ID, interaction.token, {
-              content: 'The change did not take. The clerk blames the filing cabinet. Try again.',
-            });
-          } catch {
-            // The interaction token has expired or Discord is unwell.
-          }
-          return;
-        }
-
-        try {
-          const lines = [STANDING_CONFIRMATION[mode]];
-          if (wantsRoles(mode)) lines.push(await ensureTierRoles(rest, db, guildId));
-          if (wantsNicknames(mode)) {
-            lines.push(
-              'I cannot rename the server owner, and I cannot rename anyone whose highest role sits above mine. They keep plain names.',
-            );
-          }
-          lines.push('Working through the board now.');
-
-          await rest.editOriginal(env.DISCORD_CLIENT_ID, interaction.token, {
-            content: lines.join('\n'),
-          });
-        } catch (err) {
-          console.error('standing change failed', err);
-        }
-
-        try {
-          await resyncAllStanding(rest, db, guildId);
-        } catch (err) {
-          console.error('resyncAllStanding failed', err);
-        }
-      })(),
-    );
-
-    return deferEphemeral();
-  }
-
-  return ephemeral('No such setting. The clerk checked the filing cabinet.');
+  // The panel is ephemeral, so only the checked owner can press its menus. The
+  // owner id in each custom id is the belt to those braces.
+  const current = await getSettings(c.env.DB, guildId);
+  return json({
+    type: InteractionResponseType.ChannelMessageWithSource,
+    data: {
+      embeds: [settingsEmbed(current)],
+      components: settingsComponents(current, interaction.member!.user.id),
+      flags: MessageFlags.Ephemeral,
+    },
+  });
 }
 
 async function setup(

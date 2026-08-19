@@ -28,6 +28,9 @@ export interface VoteTally {
 /** How a member's standing is shown: a tier role, a nickname suffix, both, or neither. */
 export type StandingMode = 'nicknames' | 'roles' | 'both' | 'off';
 
+/** Who sees the votes: everyone, the tally only, or nothing until the verdict. */
+export type BallotMode = 'public' | 'anonymous' | 'secret';
+
 export interface GuildSettings {
   guildId: string;
   quorum: number; // minimum total votes (including the filer's auto-vote) for a valid verdict
@@ -38,6 +41,7 @@ export interface GuildSettings {
   hubMessageId: string | null; // pinned live-board message
   tags: Record<string, string> | null; // tag key to forum tag snowflake
   standing: StandingMode;
+  ballot: BallotMode;
   tierRoles: Record<string, string> | null; // tier key to role snowflake; null until roles are made
   nicknameSync: boolean; // legacy, superseded by standing; the column stays, nothing reads it
 }
