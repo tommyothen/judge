@@ -137,6 +137,11 @@ export class Rest {
     await this.editChannel(threadId, { archived: true });
   }
 
+  /** Deleting a thread is a channel delete. Needs Manage threads on the forum. */
+  async deleteChannel(channelId: string): Promise<void> {
+    await this.send('DELETE', `/channels/${channelId}`);
+  }
+
   /** The guild object, which is how we learn who owns the place. */
   getGuild(guildId: string): Promise<any> {
     return this.send('GET', `/guilds/${guildId}`);

@@ -7,6 +7,7 @@ import {
 } from 'discord-api-types/v10';
 import {
   castVote,
+  closeCase,
   countOpenCasesByAccuser,
   createCase,
   getBoard,
@@ -19,7 +20,7 @@ import {
 import type { Rest } from '../discord/rest.js';
 import { caseButtons, caseEmbed } from '../embeds.js';
 import { refreshHub, tagIdFor } from '../hub.js';
-import type { CaseKind, Env } from '../types.js';
+import type { Case, CaseKind, Env } from '../types.js';
 
 /** Everything a handler needs: bindings, a REST client, and the request lifetime. */
 export interface Ctx {
@@ -183,6 +184,13 @@ export async function runFiling(c: Ctx, req: FilingRequest): Promise<void> {
   const db = env.DB;
   const reply = (content: string) => rest.editOriginal(env.DISCORD_CLIENT_ID, req.token, { content });
 
+  // The case row lands before the forum post does. If anything fails in
+  // between, the catch below voids the row again; without that, the phantom
+  // counts as an open case and blocks refiling until its deadline sweeps by.
+  let filed: Case | undefined;
+  let threadId: string | null = null;
+  let posted = false;
+
   try {
     if (req.accusedId === env.DISCORD_CLIENT_ID) {
       await reply('The court is beyond reproach.');
@@ -235,7 +243,7 @@ export async function runFiling(c: Ctx, req: FilingRequest): Promise<void> {
 
     const accusedName = await bestName(db, req.guildId, req.accusedId, member, req.accusedNameHint);
 
-    const filed = await createCase(db, {
+    filed = await createCase(db, {
       guildId: req.guildId,
       channelId: settings.forumChannelId,
       kind: req.kind,
@@ -273,8 +281,9 @@ export async function runFiling(c: Ctx, req: FilingRequest): Promise<void> {
         components: [caseButtons(filed, tally, false, settings.ballot)],
       },
     });
-    const threadId = String(post.id);
+    threadId = String(post.id);
     await setCasePost(db, filed.id, threadId);
+    posted = true;
 
     try {
       await refreshHub(rest, db, req.guildId);
@@ -288,6 +297,25 @@ export async function runFiling(c: Ctx, req: FilingRequest): Promise<void> {
     await reply(`Case #${filed.number} filed. The court will hear it.${conscience} ${url}`);
   } catch (err) {
     console.error('filing failed', err);
+
+    // Undo the half-filed case so a retry is not refused as a duplicate. Once
+    // posted is true only the reply below can have thrown, and the case is fine.
+    if (filed && !posted) {
+      try {
+        await closeCase(db, filed.id, 'voided');
+      } catch (cleanupErr) {
+        // The sweep voids overdue message-less cases, so this heals eventually.
+        console.error(`voiding half-filed case ${filed.id} failed`, cleanupErr);
+      }
+      if (threadId) {
+        try {
+          await rest.deleteChannel(threadId);
+        } catch {
+          // An orphan post with a voided case behind it; the buttons will refuse.
+        }
+      }
+    }
+
     try {
       await reply('The filing did not take. The clerk blames the paperwork. Try again.');
     } catch {

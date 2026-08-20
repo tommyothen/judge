@@ -92,15 +92,30 @@ export async function resolveDueCases(env: Env, rest: Rest): Promise<void> {
   }
 }
 
+/**
+ * How long a filing may sit message-less before the sweep calls it dead. Longer
+ * than any filing can actually run, so only a crashed one ever gets voided.
+ */
+const FILING_GRACE_MS = 10 * 60_000;
+
 /** One message existence check per open case per tick, then void or resolve. */
 async function sweepCase(env: Env, rest: Rest, filed: Case, now: number): Promise<void> {
   const db = env.DB;
   const past = filed.deadline <= now;
 
-  // A case is briefly message-less between createCase and setCasePost, so
-  // only an overdue case with no message is genuinely lost.
+  // A case is briefly message-less between createCase and setCasePost. A crash
+  // in that window voids its own case, but if the whole isolate died the
+  // phantom would block refiling until its deadline, so the sweep clears
+  // anything message-less that is overdue or well past the filing window.
   if (!filed.messageId) {
-    if (past) await closeCase(db, filed.id, 'voided');
+    if (past || now - filed.createdAt > FILING_GRACE_MS) {
+      await closeCase(db, filed.id, 'voided');
+      try {
+        await refreshHub(rest, db, filed.guildId);
+      } catch (err) {
+        console.error(`refreshing the hub after voiding case ${filed.id} failed`, err);
+      }
+    }
     return;
   }
 
